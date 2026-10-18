@@ -270,7 +270,7 @@ table.map td:first-child{color:var(--muted);font-size:.84rem;max-width:260px}
 <section class="panel" id="tab-comm" hidden>
   <div class="row" style="justify-content:space-between">
     <h2 id="commTitle">Commentaires</h2>
-    <span class="muted small" id="commCount"></span>
+    <div class="row"><span class="muted small" id="commCount"></span><button class="btn small" id="btnClearComm">Vider les commentaires de cette période</button></div>
   </div>
   <p class="lead small">Les commentaires s'enregistrent automatiquement sur cet ordinateur, séparément des notes. Pensez à télécharger une sauvegarde (étape 5) si vous changez d'ordinateur.</p>
   <div id="commView"></div>
@@ -290,6 +290,11 @@ table.map td:first-child{color:var(--muted);font-size:.84rem;max-width:260px}
       <button class="btn primary big" id="btnGen">Générer les bulletins</button>
       <p class="muted small" id="genMsg">Un seul fichier Word avec tous les bulletins, prêt à imprimer en recto-verso.</p>
     </div>
+  </div>
+  <div class="card">
+    <h3>Périodes enregistrées sur cet ordinateur</h3>
+    <p class="muted small">Chaque période (classe, saison, année) garde ses propres commentaires et autoévaluations. Pour commencer une nouvelle période, choisissez simplement la nouvelle saison à l'étape 2 : la page de commentaires repart vide, et les périodes précédentes restent ici.</p>
+    <div id="periods"></div>
   </div>
   <div class="card">
     <h3>Sauvegarde des commentaires et des autoévaluations</h3>
@@ -818,7 +823,49 @@ function renderComm(){
 }
 
 /* ---------- rendu : générer ---------- */
+const SEASON_ORDER = { automne:1, hiver:2, printemps:3, ete:4 };
+function listPeriods(){
+  const map = {};
+  try{
+    for (let i = 0; i < localStorage.length; i++){
+      const k = localStorage.key(i), m = k && k.match(/^bg:([^:]*):([a-z]+):(\d+):(comments|auto)$/);
+      if (!m) continue;
+      const id = `${m[1]}:${m[2]}:${m[3]}`, p = map[id] ||= { id, classe:m[1], season:m[2], year:+m[3], comments:0, auto:0 };
+      const v = store.get(k, {});
+      if (m[4] === "comments") p.comments = Object.values(v).filter(t => String(t).trim()).length;
+      else p.auto = Object.keys(v).length;
+    }
+  }catch(e){}
+  return Object.values(map).filter(p => p.comments || p.auto).sort((a,b) => b.year - a.year || (SEASON_ORDER[b.season]||0) - (SEASON_ORDER[a.season]||0) || a.classe.localeCompare(b.classe));
+}
+function confirmClick(btn, label, action){
+  if (btn.dataset.confirm){ action(); return; }
+  const old = btn.textContent; btn.dataset.confirm = "1"; btn.textContent = label;
+  setTimeout(() => { if (btn.isConnected){ delete btn.dataset.confirm; btn.textContent = old; } }, 4000);
+}
+function renderPeriods(){
+  const box = $("#periods"); if (!box) return;
+  const list = listPeriods(), cur = `${keyOf(S.classe)||"classe"}:${S.season}:${S.year}`;
+  if (!list.length){ box.innerHTML = `<p class="muted small">Aucune période enregistrée pour l'instant.</p>`; return; }
+  const sName = id => (SEASONS.find(x => x.id === id) || {name:id}).name;
+  box.innerHTML = `<div class="tscroll" style="border:0"><table class="map"><thead><tr><th>Période</th><th>Commentaires</th><th>Autoévaluations</th><th></th></tr></thead><tbody>${list.map(p => `<tr>
+    <td><b>${esc(p.classe.toUpperCase())}</b> · ${esc(sName(p.season))} ${p.year}${p.id === cur ? ` <span class="chip">en cours</span>` : ""}</td>
+    <td>${p.comments}</td><td>${p.auto} élève${p.auto>1?"s":""}</td>
+    <td><div class="row" style="justify-content:flex-end">${p.id === cur ? "" : `<button class="btn small" data-popen="${esc(p.id)}">Ouvrir</button>`}<button class="btn small" data-psave="${esc(p.id)}">Télécharger</button><button class="btn small" data-pdel="${esc(p.id)}">Supprimer</button></div></td></tr>`).join("")}</tbody></table></div>`;
+  $$("[data-popen]").forEach(b => b.onclick = () => {
+    const [c, se, y] = b.dataset.popen.split(":"); S.classe = c.toUpperCase(); S.season = se; S.year = +y; saveSettings(); loadWork(); renderAll();
+    toast(`Période ouverte : ${S.classe} · ${sName(se)} ${y}.`); });
+  $$("[data-psave]").forEach(b => b.onclick = () => {
+    const [c, se, y] = b.dataset.psave.split(":"), base = `bg:${c}:${se}:${y}`;
+    const data = { app:"bulletins-gistoux", version:1, classe:c.toUpperCase(), season:se, year:+y, savedAt:new Date().toISOString(), comments:store.get(base+":comments", {}), auto:store.get(base+":auto", {}) };
+    download(new Blob([JSON.stringify(data, null, 1)], {type:"application/json"}), `Sauvegarde_${c.toUpperCase()}_${sName(se)}_${y}.json`); });
+  $$("[data-pdel]").forEach(b => b.onclick = () => confirmClick(b, "Confirmer", () => {
+    const base = "bg:" + b.dataset.pdel; store.del(base+":comments"); store.del(base+":auto");
+    if (b.dataset.pdel === cur){ C = {}; A = {}; }
+    renderPeriods(); toast("Période supprimée de cet ordinateur."); }));
+}
 function renderGen(){
+  renderPeriods();
   const ul = $("#checks"), items = [];
   const add = (st, txt) => items.push(`<li><span class="st ${st}">${st==="ok"?"✓":"!"}</span><span>${txt}</span></li>`);
   if (!D){ add("bad", "Aucun cahier de notes chargé."); ul.innerHTML = items.join(""); $("#btnGen").disabled = true; return; }
@@ -876,6 +923,9 @@ bindDrop("#dropForms", "#fileForms", async f => {
   try{ await importForms(f); } catch(err){ console.error(err); toast("Lecture impossible : " + err.message); }
 });
 $("#btnKid").onclick = kidOpen;
+$("#btnClearComm").onclick = e => confirmClick(e.target, "Confirmer : tout effacer", () => {
+  C = {}; saveComments(); renderComm(); toast("Commentaires de cette période effacés.");
+  e.target.textContent = "Vider les commentaires de cette période"; delete e.target.dataset.confirm; });
 $("#btnClearAuto").onclick = () => { if (!D) return; const b = $("#btnClearAuto");
   if (b.dataset.confirm){ A = {}; saveAuto(); renderAuto(); delete b.dataset.confirm; b.textContent = "Effacer les réponses importées"; toast("Réponses importées effacées."); }
   else { b.dataset.confirm = "1"; b.textContent = "Confirmer l'effacement"; setTimeout(()=>{ delete b.dataset.confirm; b.textContent = "Effacer les réponses importées"; }, 4000); } };
